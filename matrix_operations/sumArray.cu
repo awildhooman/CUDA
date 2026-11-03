@@ -4,7 +4,25 @@
 #include <random>
 #include <sys/time.h>
 
-#define DATA_PER_THREAD 8
+#ifndef DATA_PER_THREAD
+#define DATA_PER_THREAD 16
+#endif
+
+#define ARG_NX 1
+#define ARG_NY 2
+#define ARG_SEED1 3
+#define ARG_SEED2 4
+#define ARG_THREADS 5
+
+#define CHECK(call)                                                        \
+    do {                                                                   \
+        cudaError_t err = (call);                                          \
+        if (err != cudaSuccess) {                                          \
+            fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__,  \
+                    cudaGetErrorString(err));                              \
+            exit(EXIT_FAILURE);                                            \
+        }                                                                  \
+    } while (0)
 
 void sumMatrixOnHost(float *h_A, float *h_B, float *h_C, int nxy) {
     for (int i = 0; i < nxy; i++) {
@@ -18,19 +36,13 @@ __global__ void sumMatrixOnDeviceBasic(float *d_A, float *d_B, float *d_C, int n
     if (index < nx*ny) d_C[index] = d_A[index] + d_B[index];
 }
 
-// Each thread handles 16 pieces of data. Grid requires 1/16 the blocks in the y direction
-__global__ void sumMatrixOnDeviceOptimized(float *d_A, float *d_B, float *d_C, int nx, int ny) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y_base = blockIdx.y * DATA_PER_THREAD;
-    if (x < nx) {
-        #pragma unroll
-        for (int i = 0; i < DATA_PER_THREAD; i++) {
-            int y = y_base + i; // Row index
-            if (y < ny) {
-                int idx = y * nx + x;
-                d_C[idx] = d_A[idx] + d_B[idx];
-            }
-        }
+// Each thread handles DATA_PER_THREAD amount of data
+__global__ void sumMatrixOnDeviceOptimized(float *d_A, float *d_B, float *d_C, int nxy) {
+    int base = blockIdx.x * blockDim.x + threadIdx.x;
+    #pragma unroll
+    for (int i = 0; i < DATA_PER_THREAD; i++) {
+        int index = base + blockDim.x * i;
+        if (index < nxy) d_C[index] = d_A[index] + d_B[index];
     }
 }
 
@@ -56,6 +68,11 @@ void initializeData(float *data, int size, unsigned int seed) {
 }
 
 int main(int argc, char **argv) {
+    // Function args: nx, ny, seed 1, seed 2, threads/block
+    if (argc <= 1) {
+        printf("Error: command-line arguments required: nx, ny, seed1, seed2, threads/block");
+        return 1;
+    }
     printf("%s Starting...\n", argv[0]);
 
     // Set up Device
@@ -66,8 +83,8 @@ int main(int argc, char **argv) {
     cudaSetDevice(dev);
 
     // Malloc & Initialize Data on Host
-    int nx = 1 << 10;
-    int ny = 1 << 10;
+    int nx = atoi(argv[ARG_NX]);
+    int ny = atoi(argv[ARG_NY]);
 
     int nxy = nx*ny;
     int nBytes = nxy*sizeof(float);
@@ -79,8 +96,8 @@ int main(int argc, char **argv) {
     hostRef = (float*) malloc(nBytes);
     gpuRef = (float*) malloc(nBytes);
 
-    initializeData(h_A, nxy, 1);
-    initializeData(h_B, nxy, 1);
+    initializeData(h_A, nxy, atoi(argv[ARG_SEED1]));
+    initializeData(h_B, nxy, atoi(argv[ARG_SEED2]));
 
     // Add matrices on CPU for result checking
     sumMatrixOnHost(h_A, h_B, hostRef, nxy);
@@ -96,16 +113,16 @@ int main(int argc, char **argv) {
     cudaMemcpy(d_B, h_B, nBytes, cudaMemcpyHostToDevice);
 
     // Set up grid and block dimensions
-    int dimx = 128; // Block dimension
+    int dimx = atoi(argv[ARG_THREADS]); // Block dimension
     dim3 block(dimx);
-    dim3 grid((nx+block.x-1) / block.x, (ny+DATA_PER_THREAD-1) / DATA_PER_THREAD); // 2D grid, 1D blocks
+    dim3 grid( (nxy + block.x * DATA_PER_THREAD - 1) / (block.x * DATA_PER_THREAD) ); // 1D grid, 1D blocks
 
     // Invoke and time kernel
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    sumMatrixOnDeviceOptimized <<< grid, block >>> (d_A, d_B, d_C, nx, ny);
+    sumMatrixOnDeviceOptimized <<< grid, block >>> (d_A, d_B, d_C, nxy);
     cudaEventRecord(stop);
     cudaDeviceSynchronize(); // Wait until stop event is recorded
     float timeElapsedMs = 0;
