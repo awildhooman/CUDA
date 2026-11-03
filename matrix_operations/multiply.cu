@@ -5,7 +5,15 @@
 #include <cuda_runtime.h>
 #include <sys/time.h>
 
+#ifndef TILE_SIZE
 #define TILE_SIZE 16
+#endif
+
+#define ARG_M 1
+#define ARG_N 2
+#define ARG_P 3
+#define ARG_SEED1 4
+#define ARG_SEED2 5
 
 #define CHECK(call)                                                        \
     do {                                                                   \
@@ -58,7 +66,8 @@ __global__ void matrixMulRectangular(const double *A, const double *B, double *C
         }
 
         __syncthreads();
-
+    
+        // Dot product
         #pragma unroll
         for (int k = 0; k < TILE_SIZE; ++k) {
             value += s_A[threadIdx.y][k] * s_B[k][threadIdx.x];
@@ -115,6 +124,12 @@ void printMatrix(double *data, int nx, int ny) {
 int main(int argc, char **argv) {
     printf("%s Starting...\n", argv[0]);
 
+    // Input args: M, N, P, seed 1, seed 2
+    if (argc < 6) {
+        printf("Error: command-line arguments required: M, N, P, seed1, seed2");
+        return 1;
+    }
+
     // Set up Device
     int dev = 0;
     cudaDeviceProp deviceProp;
@@ -123,9 +138,9 @@ int main(int argc, char **argv) {
     CHECK(cudaSetDevice(dev));
 
     // Matrix dimensions: A is M x N, B is N x P, C is M x P.
-    int M = (1 << 5);
-    int N = (1 << 5) + (1 << 2);
-    int P = (1 << 5) + (1 << 3);
+    int M = atoi(argv[ARG_M]);
+    int N = atoi(argv[ARG_N]);
+    int P = atoi(argv[ARG_P]);
     printf("Matrix Sizes: A = %d x %d, B = %d x %d, C = %d x %d\n",
            M, N, N, P, M, P);
 
@@ -146,8 +161,8 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    initializeData(h_A, sizeA, 1);
-    initializeData(h_B, sizeB, 2);
+    initializeData(h_A, sizeA, atoi(argv[ARG_SEED1]));
+    initializeData(h_B, sizeB, atoi(argv[ARG_SEED2]));
 
     // Compute reference result on CPU
     struct timeval cpuStart, cpuEnd;
